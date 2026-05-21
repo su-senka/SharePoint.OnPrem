@@ -1,0 +1,104 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version override (optional, e.g. 1.0.0)"
+        required: false
+        type: string
+      publish_symbols:
+        description: "Publish snupkg symbols"
+        required: false
+        type: boolean
+        default: true
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.0.x
+
+      - name: Resolve package root
+        id: root
+        shell: bash
+        run: |
+          if [ -f "SharePoint.OnPrem.slnx" ]; then
+            echo "value=." >> "$GITHUB_OUTPUT"
+          elif [ -f "SharePoint.OnPrem/SharePoint.OnPrem.slnx" ]; then
+            echo "value=SharePoint.OnPrem" >> "$GITHUB_OUTPUT"
+          else
+            echo "SharePoint.OnPrem.slnx not found." >&2
+            exit 1
+          fi
+
+      - name: Restore
+        shell: bash
+        run: dotnet restore "${{ steps.root.outputs.value }}/SharePoint.OnPrem.slnx"
+
+      - name: Build
+        shell: bash
+        run: dotnet build "${{ steps.root.outputs.value }}/SharePoint.OnPrem.slnx" -c Release --no-restore
+
+      - name: Pack
+        shell: bash
+        run: |
+          ROOT="${{ steps.root.outputs.value }}"
+          OUT="$ROOT/artifacts"
+          mkdir -p "$OUT"
+
+          VERSION_ARG=""
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION_ARG="/p:Version=${{ github.event.inputs.version }}"
+          fi
+
+          for p in \
+            "$ROOT/src/SharePoint.OnPrem.Abstractions/SharePoint.OnPrem.Abstractions.csproj" \
+            "$ROOT/src/SharePoint.OnPrem.Core/SharePoint.OnPrem.Core.csproj" \
+            "$ROOT/src/SharePoint.OnPrem.Files/SharePoint.OnPrem.Files.csproj" \
+            "$ROOT/src/SharePoint.OnPrem.Security/SharePoint.OnPrem.Security.csproj" \
+            "$ROOT/src/SharePoint.OnPrem.DependencyInjection/SharePoint.OnPrem.DependencyInjection.csproj"; do
+            dotnet pack "$p" -c Release --no-build -o "$OUT" $VERSION_ARG
+          done
+
+      - name: Publish NuGet packages
+        shell: bash
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "NUGET_API_KEY secret is missing." >&2
+            exit 1
+          fi
+
+          ROOT="${{ steps.root.outputs.value }}"
+          dotnet nuget push "$ROOT/artifacts/*.nupkg" \
+            --source "https://api.nuget.org/v3/index.json" \
+            --api-key "$NUGET_API_KEY" \
+            --skip-duplicate
+
+      - name: Publish symbol packages
+        if: ${{ github.event_name == 'release' || github.event.inputs.publish_symbols == 'true' }}
+        shell: bash
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          ROOT="${{ steps.root.outputs.value }}"
+          dotnet nuget push "$ROOT/artifacts/*.snupkg" \
+            --source "https://api.nuget.org/v3/index.json" \
+            --api-key "$NUGET_API_KEY" \
+            --skip-duplicate
+

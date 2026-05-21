@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/SharePoint.OnPrem.SampleConsole/SharePoint.OnPrem.SampleConsole.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/SharePoint.OnPrem.Abstractions/SharePoint.OnPrem.Abstractions.csproj" />
+    <Project Path="src/SharePoint.OnPrem.Core/SharePoint.OnPrem.Core.csproj" />
+    <Project Path="src/SharePoint.OnPrem.DependencyInjection/SharePoint.OnPrem.DependencyInjection.csproj" />
+    <Project Path="src/SharePoint.OnPrem.Files/SharePoint.OnPrem.Files.csproj" />
+    <Project Path="src/SharePoint.OnPrem.Security/SharePoint.OnPrem.Security.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SharePoint.OnPrem.Core.Tests/SharePoint.OnPrem.Core.Tests.csproj" />
+    <Project Path="tests/SharePoint.OnPrem.DependencyInjection.Tests/SharePoint.OnPrem.DependencyInjection.Tests.csproj" />
+  </Folder>
+</Solution>

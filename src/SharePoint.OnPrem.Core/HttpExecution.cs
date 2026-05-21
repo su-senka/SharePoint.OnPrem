@@ -1,0 +1,275 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using SharePoint.OnPrem.Abstractions;
+
+namespace SharePoint.OnPrem.Core;
+
+public sealed class SharePointSendOptions
+{
+    public bool IncludeFormDigest { get; init; }
+    public bool EnsureSuccessStatusCode { get; init; } = true;
+}
+
+public interface IFormDigestProvider
+{
+    Task<string> GetDigestAsync(HttpClient httpClient, CancellationToken ct = default);
+}
+
+public interface ISharePointRequestExecutor
+{
+    Task<HttpResponseMessage> SendAsync(
+        HttpClient httpClient,
+        HttpRequestMessage request,
+        SharePointSendOptions? options = null,
+        CancellationToken ct = default);
+
+    Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct = default);
+}
+
+public sealed class SharePointFormDigestProvider(SharePointOnPremOptions options) : IFormDigestProvider, IDisposable
+{
+    private readonly SharePointOnPremOptions _options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    private string? _cachedDigest;
+    private DateTimeOffset _expiresAtUtc;
+
+    public async Task<string> GetDigestAsync(HttpClient httpClient, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(httpClient);
+        _options.Validate();
+
+        if (TryGetCachedDigest(out var cached))
+            return cached;
+
+        await _gate.WaitAsync(ct);
+        try
+        {
+            if (TryGetCachedDigest(out cached))
+                return cached;
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, "_api/contextinfo")
+            {
+                Content = new StringContent(string.Empty)
+            };
+
+            using var response = await httpClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+                throw await SharePointErrorFactory.CreateAsync(response, ct);
+
+            var payload = await response.Content.ReadAsStringAsync(ct);
+            using var document = JsonDocument.Parse(payload);
+
+            var digest = ReadDigest(document.RootElement)
+                ?? throw new SharePointValidationException("Failed to load form digest value from SharePoint response.")
+                {
+                    RequestUrl = response.RequestMessage?.RequestUri?.ToString()
+                };
+
+            var timeoutSeconds = ReadTimeoutSeconds(document.RootElement);
+            if (_options.UseFormDigestCaching)
+            {
+                _cachedDigest = digest;
+                _expiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(Math.Max(30, timeoutSeconds - 30));
+            }
+
+            return digest;
+        }
+        catch (JsonException ex)
+        {
+            throw new SharePointValidationException($"Malformed response when retrieving form digest: {ex.Message}");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public void Dispose()
+    {
+        _gate.Dispose();
+    }
+
+    private bool TryGetCachedDigest(out string digest)
+    {
+        if (_options.UseFormDigestCaching
+            && !string.IsNullOrWhiteSpace(_cachedDigest)
+            && DateTimeOffset.UtcNow < _expiresAtUtc)
+        {
+            digest = _cachedDigest;
+            return true;
+        }
+
+        digest = string.Empty;
+        return false;
+    }
+
+    private static string? ReadDigest(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            if (root.TryGetProperty("FormDigestValue", out var digestValue))
+                return digestValue.GetString();
+
+            if (root.TryGetProperty("d", out var d)
+                && d.ValueKind == JsonValueKind.Object
+                && d.TryGetProperty("GetContextWebInformation", out var info)
+                && info.ValueKind == JsonValueKind.Object
+                && info.TryGetProperty("FormDigestValue", out var nestedDigest))
+            {
+                return nestedDigest.GetString();
+            }
+        }
+
+        return null;
+    }
+
+    private static int ReadTimeoutSeconds(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            if (root.TryGetProperty("FormDigestTimeoutSeconds", out var timeout)
+                && timeout.TryGetInt32(out var direct))
+            {
+                return direct;
+            }
+
+            if (root.TryGetProperty("d", out var d)
+                && d.ValueKind == JsonValueKind.Object
+                && d.TryGetProperty("GetContextWebInformation", out var info)
+                && info.ValueKind == JsonValueKind.Object
+                && info.TryGetProperty("FormDigestTimeoutSeconds", out var nestedTimeout)
+                && nestedTimeout.TryGetInt32(out var nested))
+            {
+                return nested;
+            }
+        }
+
+        return 1800;
+    }
+}
+
+public sealed class SharePointRequestExecutor(IFormDigestProvider formDigestProvider) : ISharePointRequestExecutor
+{
+    private readonly IFormDigestProvider _formDigestProvider = formDigestProvider ?? throw new ArgumentNullException(nameof(formDigestProvider));
+
+    public async Task<HttpResponseMessage> SendAsync(
+        HttpClient httpClient,
+        HttpRequestMessage request,
+        SharePointSendOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(httpClient);
+        ArgumentNullException.ThrowIfNull(request);
+
+        var effectiveOptions = options ?? new SharePointSendOptions();
+
+        if (effectiveOptions.IncludeFormDigest && !request.Headers.Contains("X-RequestDigest"))
+        {
+            var digest = await _formDigestProvider.GetDigestAsync(httpClient, ct);
+            request.Headers.Add("X-RequestDigest", digest);
+        }
+
+        var response = await httpClient.SendAsync(request, ct);
+        if (!effectiveOptions.EnsureSuccessStatusCode)
+            return response;
+
+        if (response.IsSuccessStatusCode)
+            return response;
+
+        var exception = await SharePointErrorFactory.CreateAsync(response, ct);
+        response.Dispose();
+        throw exception;
+    }
+
+    public async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        if (response.IsSuccessStatusCode)
+            return;
+
+        throw await SharePointErrorFactory.CreateAsync(response, ct);
+    }
+}
+
+public static class SharePointContentFactory
+{
+    public static HttpContent CreateJsonContent(object payload)
+    {
+        var json = JsonSerializer.Serialize(payload);
+        var content = new StringContent(json, Encoding.UTF8);
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json;odata=nometadata");
+        return content;
+    }
+}
+
+public static class SharePointErrorFactory
+{
+    public static async Task<SharePointException> CreateAsync(HttpResponseMessage response, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+
+        var requestUrl = response.RequestMessage?.RequestUri?.ToString();
+        var correlationId = response.Headers.TryGetValues("SPRequestGuid", out var values)
+            ? values.FirstOrDefault()
+            : null;
+
+        var detail = await TryReadProblemDetailAsync(response, ct);
+        var message = string.IsNullOrWhiteSpace(detail)
+            ? $"SharePoint request failed. Status={(int)response.StatusCode} {response.StatusCode}, Url={requestUrl}, SPRequestGuid={correlationId}"
+            : $"SharePoint request failed. Status={(int)response.StatusCode} {response.StatusCode}, Url={requestUrl}, SPRequestGuid={correlationId}. Detail={detail}";
+
+        return response.StatusCode switch
+        {
+            HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                => new SharePointUnauthorizedException(message) { RequestUrl = requestUrl, CorrelationId = correlationId },
+            HttpStatusCode.NotFound
+                => new SharePointNotFoundException(message) { RequestUrl = requestUrl, CorrelationId = correlationId },
+            HttpStatusCode.Conflict
+                => new SharePointConflictException(message) { RequestUrl = requestUrl, CorrelationId = correlationId },
+            (HttpStatusCode)429 or HttpStatusCode.ServiceUnavailable
+                => new SharePointTransientException(message) { RequestUrl = requestUrl, CorrelationId = correlationId },
+            _ => new SharePointException(message) { RequestUrl = requestUrl, CorrelationId = correlationId }
+        };
+    }
+
+    private static async Task<string?> TryReadProblemDetailAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.Content is null)
+            return null;
+
+        var payload = await response.Content.ReadAsStringAsync(ct);
+        if (string.IsNullOrWhiteSpace(payload))
+            return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            if (document.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                if (document.RootElement.TryGetProperty("error", out var error)
+                    && error.ValueKind == JsonValueKind.Object
+                    && error.TryGetProperty("message", out var messageElement))
+                {
+                    return messageElement.GetString();
+                }
+
+                if (document.RootElement.TryGetProperty("Detail", out var detailUpper))
+                    return detailUpper.GetString();
+
+                if (document.RootElement.TryGetProperty("detail", out var detailLower))
+                    return detailLower.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            return payload;
+        }
+
+        return payload;
+    }
+}
+

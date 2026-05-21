@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master", "develop"]
+  pull_request:
+    branches: ["*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.0.x
+
+      - name: Resolve package root
+        id: root
+        shell: bash
+        run: |
+          if [ -f "SharePoint.OnPrem.slnx" ]; then
+            echo "value=." >> "$GITHUB_OUTPUT"
+          elif [ -f "SharePoint.OnPrem/SharePoint.OnPrem.slnx" ]; then
+            echo "value=SharePoint.OnPrem" >> "$GITHUB_OUTPUT"
+          else
+            echo "SharePoint.OnPrem.slnx not found." >&2
+            exit 1
+          fi
+
+      - name: Restore
+        shell: bash
+        run: dotnet restore "${{ steps.root.outputs.value }}/SharePoint.OnPrem.slnx"
+
+      - name: Build
+        shell: bash
+        run: dotnet build "${{ steps.root.outputs.value }}/SharePoint.OnPrem.slnx" -c Debug --no-restore
+
+      - name: Test
+        shell: bash
+        run: dotnet test "${{ steps.root.outputs.value }}/SharePoint.OnPrem.slnx" -c Debug --no-build --verbosity normal
+
