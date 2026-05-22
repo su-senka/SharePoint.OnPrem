@@ -1,7 +1,4 @@
 <Solution>
-  <Folder Name="/samples/">
-    <Project Path="samples/SharePoint.OnPrem.SampleConsole/SharePoint.OnPrem.SampleConsole.csproj" />
-  </Folder>
   <Folder Name="/src/">
     <Project Path="src/SharePoint.OnPrem.Abstractions/SharePoint.OnPrem.Abstractions.csproj" />
     <Project Path="src/SharePoint.OnPrem.Core/SharePoint.OnPrem.Core.csproj" />

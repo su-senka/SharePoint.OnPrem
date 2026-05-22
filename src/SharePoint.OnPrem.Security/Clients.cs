@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace SharePoint.OnPrem.Security;
 
-public sealed class SharePointSecurityClient(
+internal sealed class SharePointSecurityClient(
     HttpClient httpClient,
     ILoginNameNormalizer loginNameNormalizer,
     ISharePointRequestExecutor requestExecutor) : ISharePointSecurityClient
@@ -66,15 +66,14 @@ public sealed class SharePointSecurityClient(
         if (existingId.HasValue)
             return existingId.Value;
 
-        using var message = new HttpRequestMessage(HttpMethod.Post, "_api/web/sitegroups")
+        using var message = new HttpRequestMessage(HttpMethod.Post, "_api/web/sitegroups");
+        
+        message.Content = SharePointContentFactory.CreateJsonContent(new
         {
-            Content = SharePointContentFactory.CreateJsonContent(new
-            {
-                __metadata = new { type = "SP.Group" },
-                Title = groupName,
-                Description = description ?? string.Empty
-            })
-        };
+            __metadata = new { type = "SP.Group" },
+            Title = groupName,
+            Description = description ?? string.Empty
+        });
 
         using var response = await _requestExecutor.SendAsync(
             _httpClient,
@@ -130,10 +129,8 @@ public sealed class SharePointSecurityClient(
     {
         var normalizedLogin = NormalizeLogin(loginName);
 
-        using var message = new HttpRequestMessage(HttpMethod.Post, "_api/web/ensureuser")
-        {
-            Content = SharePointContentFactory.CreateJsonContent(new { logonName = normalizedLogin })
-        };
+        using var message = new HttpRequestMessage(HttpMethod.Post, "_api/web/ensureuser");
+        message.Content = SharePointContentFactory.CreateJsonContent(new { logonName = normalizedLogin });
 
         using var response = await _requestExecutor.SendAsync(
             _httpClient,
@@ -190,14 +187,12 @@ public sealed class SharePointSecurityClient(
 
         foreach (var loginName in NormalizeLogins(loginNames))
         {
-            using var message = new HttpRequestMessage(HttpMethod.Post, $"_api/web/sitegroups/getbyname('{encodedName}')/users")
+            using var message = new HttpRequestMessage(HttpMethod.Post, $"_api/web/sitegroups/getbyname('{encodedName}')/users");
+            message.Content = SharePointContentFactory.CreateJsonContent(new
             {
-                Content = SharePointContentFactory.CreateJsonContent(new
-                {
-                    __metadata = new { type = "SP.User" },
-                    LoginName = loginName
-                })
-            };
+                __metadata = new { type = "SP.User" },
+                LoginName = loginName
+            });
 
             using var response = await _requestExecutor.SendAsync(
                 _httpClient,
@@ -294,6 +289,103 @@ public sealed class SharePointSecurityClient(
             return;
 
         await _requestExecutor.EnsureSuccessAsync(response, ct);
+    }
+
+    public async Task BindRoleToFileAsync(string serverRelativeFile, string principalName, string roleName, CancellationToken ct = default)
+    {
+        var validatedFile = ServerRelativeUrl.Validate(serverRelativeFile);
+        var principalId = await ResolvePrincipalIdAsync(principalName, createMissingGroups: true, ct);
+        var roleDefinitionId = await GetRoleDefinitionIdAsync(roleName, ct);
+        var encodedFile = Uri.EscapeDataString(validatedFile);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedFile}')/ListItemAllFields/roleassignments/addroleassignment(principalid={principalId},roledefid={roleDefinitionId})");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { IncludeFormDigest = true },
+            ct);
+    }
+
+    public async Task RemoveRoleFromFileAsync(string serverRelativeFile, string principalName, CancellationToken ct = default)
+    {
+        var validatedFile = ServerRelativeUrl.Validate(serverRelativeFile);
+        var principalId = await ResolvePrincipalIdOrNullAsync(principalName, ct);
+        if (!principalId.HasValue)
+            return;
+
+        var encodedFile = Uri.EscapeDataString(validatedFile);
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedFile}')/ListItemAllFields/roleassignments/getbyprincipalid({principalId.Value})");
+
+        message.Headers.Add("IF-MATCH", "*");
+        message.Headers.Add("X-HTTP-Method", "DELETE");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions
+            {
+                IncludeFormDigest = true,
+                EnsureSuccessStatusCode = false
+            },
+            ct);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return;
+
+        await _requestExecutor.EnsureSuccessAsync(response, ct);
+    }
+
+    public async Task<IReadOnlyList<SharePointPrincipalRoleAssignment>> GetFolderRoleAssignmentsAsync(string serverRelativeFolder, CancellationToken ct = default)
+    {
+        var validatedFolder = ServerRelativeUrl.Validate(serverRelativeFolder);
+        var encodedFolder = Uri.EscapeDataString(validatedFolder);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"_api/web/GetFolderByServerRelativeUrl('{encodedFolder}')/ListItemAllFields/RoleAssignments?$expand=Member,RoleDefinitionBindings&$select=PrincipalId,Member/Title,Member/LoginName,Member/PrincipalType,RoleDefinitionBindings/Id,RoleDefinitionBindings/Name");
+
+        using var response = await _requestExecutor.SendAsync(_httpClient, message, ct: ct);
+        var payload = await response.Content.ReadAsStringAsync(ct);
+        using var document = JsonDocument.Parse(payload);
+
+        if (!document.RootElement.TryGetProperty("value", out var value)
+            || value.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<SharePointPrincipalRoleAssignment>();
+        }
+
+        return value.EnumerateArray()
+            .Select(MapRoleAssignment)
+            .ToList();
+    }
+
+    public async Task<IReadOnlyList<SharePointPrincipalRoleAssignment>> GetFileRoleAssignmentsAsync(string serverRelativeFile, CancellationToken ct = default)
+    {
+        var validatedFile = ServerRelativeUrl.Validate(serverRelativeFile);
+        var encodedFile = Uri.EscapeDataString(validatedFile);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedFile}')/ListItemAllFields/RoleAssignments?$expand=Member,RoleDefinitionBindings&$select=PrincipalId,Member/Title,Member/LoginName,Member/PrincipalType,RoleDefinitionBindings/Id,RoleDefinitionBindings/Name");
+
+        using var response = await _requestExecutor.SendAsync(_httpClient, message, ct: ct);
+        var payload = await response.Content.ReadAsStringAsync(ct);
+        using var document = JsonDocument.Parse(payload);
+
+        if (!document.RootElement.TryGetProperty("value", out var value)
+            || value.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<SharePointPrincipalRoleAssignment>();
+        }
+
+        return value.EnumerateArray()
+            .Select(MapRoleAssignment)
+            .ToList();
     }
 
     public async Task SyncGroupMembershipAsync(string groupName, IEnumerable<string> desiredLoginNames, CancellationToken ct = default)
@@ -433,6 +525,52 @@ public sealed class SharePointSecurityClient(
         return principalName.Contains('\\')
                || principalName.Contains('@')
                || principalName.Contains('|');
+    }
+
+    private static SharePointPrincipalRoleAssignment MapRoleAssignment(JsonElement roleAssignment)
+    {
+        var principalId = roleAssignment.TryGetProperty("PrincipalId", out var principalIdElement)
+            && principalIdElement.TryGetInt32(out var parsedPrincipalId)
+            ? parsedPrincipalId
+            : 0;
+
+        var principalTitle = default(string);
+        var principalLoginName = default(string);
+        var principalType = default(int?);
+
+        if (roleAssignment.TryGetProperty("Member", out var member)
+            && member.ValueKind == JsonValueKind.Object)
+        {
+            principalTitle = member.TryGetProperty("Title", out var titleElement)
+                ? titleElement.GetString()
+                : null;
+            principalLoginName = member.TryGetProperty("LoginName", out var loginElement)
+                ? loginElement.GetString()
+                : null;
+
+            if (member.TryGetProperty("PrincipalType", out var typeElement)
+                && typeElement.TryGetInt32(out var parsedType))
+            {
+                principalType = parsedType;
+            }
+        }
+
+        var roles = roleAssignment.TryGetProperty("RoleDefinitionBindings", out var bindings)
+            && bindings.ValueKind == JsonValueKind.Array
+            ? bindings.EnumerateArray()
+                .Select(binding => new SharePointRoleDefinition(
+                    binding.TryGetProperty("Id", out var idElement) && idElement.TryGetInt32(out var parsedRoleId) ? parsedRoleId : 0,
+                    binding.TryGetProperty("Name", out var nameElement) ? nameElement.GetString() ?? string.Empty : string.Empty))
+                .Where(role => role.Id > 0 || !string.IsNullOrWhiteSpace(role.Name))
+                .ToList()
+            : [];
+
+        return new SharePointPrincipalRoleAssignment(
+            principalId,
+            principalTitle,
+            principalLoginName,
+            principalType,
+            roles);
     }
 }
 

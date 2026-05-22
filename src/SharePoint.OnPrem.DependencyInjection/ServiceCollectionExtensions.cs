@@ -52,7 +52,11 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddSingleton<ILoginNameNormalizer, DefaultLoginNameNormalizer>();
-        services.AddSingleton<ISharePointPathScope, BaseFolderPathScope>();
+        services.AddSingleton<BaseFolderPathScope>();
+        services.AddSingleton<ISharePointServerRelativePathScope>(sp => sp.GetRequiredService<BaseFolderPathScope>());
+#pragma warning disable CS0618
+        services.AddSingleton<ISharePointPathScope>(sp => sp.GetRequiredService<BaseFolderPathScope>());
+#pragma warning restore CS0618
         services.AddSingleton<IFormDigestProvider, SharePointFormDigestProvider>();
         services.AddSingleton<ISharePointRequestExecutor, SharePointRequestExecutor>();
 

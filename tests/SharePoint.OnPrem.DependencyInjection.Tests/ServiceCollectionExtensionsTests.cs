@@ -1,7 +1,8 @@
-﻿using FluentAssertions;
+using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using SharePoint.OnPrem.Abstractions;
 using SharePoint.OnPrem.Core;
+using Xunit;
 
 namespace SharePoint.OnPrem.DependencyInjection.Tests;
 
@@ -13,10 +14,14 @@ public class ServiceCollectionExtensionsTests
         var provider = BuildProvider();
 
         var normalizer = provider.GetRequiredService<ILoginNameNormalizer>();
-        var pathScope = provider.GetRequiredService<ISharePointPathScope>();
+        var pathScope = provider.GetRequiredService<ISharePointServerRelativePathScope>();
+#pragma warning disable CS0618
+        var legacyPathScope = provider.GetRequiredService<ISharePointPathScope>();
+#pragma warning restore CS0618
 
         normalizer.Normalize("jnovak").Should().Be("i:0#.w|ACR\\jnovak");
         pathScope.ToServerRelativePath("3255/26/001").Should().Be("/sites/pp/Attachments/3255/26/001");
+        legacyPathScope.ToServerRelativePath("3255/26/001").Should().Be("/sites/pp/Attachments/3255/26/001");
     }
 
     [Fact]
@@ -64,3 +69,4 @@ public class ServiceCollectionExtensionsTests
         return services.BuildServiceProvider();
     }
 }
+

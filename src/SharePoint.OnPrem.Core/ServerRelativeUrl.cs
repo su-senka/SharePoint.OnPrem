@@ -42,7 +42,9 @@ public static class ServerRelativeUrl
     }
 }
 
-public sealed class BaseFolderPathScope(SharePointStorageScopeOptions options) : ISharePointPathScope
+#pragma warning disable CS0618
+internal sealed class BaseFolderPathScope(SharePointStorageScopeOptions options) : ISharePointServerRelativePathScope, ISharePointPathScope
+#pragma warning restore CS0618
 {
     private readonly SharePointStorageScopeOptions _options = options ?? throw new ArgumentNullException(nameof(options));
 

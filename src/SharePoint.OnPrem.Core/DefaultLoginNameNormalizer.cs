@@ -5,7 +5,7 @@ namespace SharePoint.OnPrem.Core;
 /// <summary>
 /// Default login-name normalizer for SharePoint on-prem claims-based environments.
 /// </summary>
-public sealed class DefaultLoginNameNormalizer(SharePointIdentityOptions options) : ILoginNameNormalizer
+internal sealed class DefaultLoginNameNormalizer(SharePointIdentityOptions options) : ILoginNameNormalizer
 {
     private readonly SharePointIdentityOptions _options = options ?? throw new ArgumentNullException(nameof(options));
 

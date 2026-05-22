@@ -4,6 +4,9 @@
 # JetBrains
 .idea/
 
+# Local AI context (unversioned)
+.agents/
+
 # .NET build outputs
 **/bin/
 **/obj/

@@ -7,6 +7,8 @@ Available through `ISharePointSecurityClient`:
 - users: `EnsureUserAsync`
 - membership: `AddUsersToGroupAsync`, `RemoveUsersFromGroupAsync`, `SyncGroupMembershipAsync`
 - role binding: `BindRoleToFolderAsync`, `RemoveRoleFromFolderAsync`
+- file role binding: `BindRoleToFileAsync`, `RemoveRoleFromFileAsync`
+- permission inspection: `GetFolderRoleAssignmentsAsync`, `GetFileRoleAssignmentsAsync`
 
 ## Membership sync example
 ```csharp
@@ -42,6 +44,15 @@ await security.SyncGroupMembershipAsync(group, new[]
 await security.BreakInheritanceAsync("/sites/pp/Attachments/3255/26/001", copyRoleAssignments: false);
 await security.BindRoleToFolderAsync("/sites/pp/Attachments/3255/26/001", "PP Readers", "Read");
 await security.BindRoleToFolderAsync("/sites/pp/Attachments/3255/26/001", "PP Owners", "Edit");
+await security.BindRoleToFileAsync("/sites/pp/Attachments/3255/26/001/report.xlsx", "PP Owners", "Edit");
+
+var assignments = await security.GetFolderRoleAssignmentsAsync("/sites/pp/Attachments/3255/26/001");
+foreach (var assignment in assignments)
+{
+    Console.WriteLine($"{assignment.PrincipalTitle}: {string.Join(", ", assignment.Roles.Select(r => r.Name))}");
+}
+
+var fileAssignments = await security.GetFileRoleAssignmentsAsync("/sites/pp/Attachments/3255/26/001/report.xlsx");
 ```
 
 ## Role names
@@ -55,4 +66,6 @@ Supported out of the box:
 - Membership operations are idempotent for conflicts/not-found removal paths.
 - `SyncGroupMembershipAsync` performs set reconciliation (+add, -remove).
 - Principal names may be group names or user login names.
+- `GetFolderRoleAssignmentsAsync` returns expanded principal + role bindings from `RoleAssignments` on the folder list item.
+- `GetFileRoleAssignmentsAsync` returns expanded principal + role bindings from `RoleAssignments` on the file list item.
 

@@ -12,7 +12,7 @@ public sealed class SharePointSendOptions
     public bool EnsureSuccessStatusCode { get; init; } = true;
 }
 
-public interface IFormDigestProvider
+internal interface IFormDigestProvider
 {
     Task<string> GetDigestAsync(HttpClient httpClient, CancellationToken ct = default);
 }
@@ -28,7 +28,7 @@ public interface ISharePointRequestExecutor
     Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct = default);
 }
 
-public sealed class SharePointFormDigestProvider(SharePointOnPremOptions options) : IFormDigestProvider, IDisposable
+internal sealed class SharePointFormDigestProvider(SharePointOnPremOptions options) : IFormDigestProvider, IDisposable
 {
     private readonly SharePointOnPremOptions _options = options ?? throw new ArgumentNullException(nameof(options));
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -151,7 +151,7 @@ public sealed class SharePointFormDigestProvider(SharePointOnPremOptions options
     }
 }
 
-public sealed class SharePointRequestExecutor(IFormDigestProvider formDigestProvider) : ISharePointRequestExecutor
+internal sealed class SharePointRequestExecutor(IFormDigestProvider formDigestProvider) : ISharePointRequestExecutor
 {
     private readonly IFormDigestProvider _formDigestProvider = formDigestProvider ?? throw new ArgumentNullException(nameof(formDigestProvider));
 
@@ -195,7 +195,7 @@ public sealed class SharePointRequestExecutor(IFormDigestProvider formDigestProv
     }
 }
 
-public static class SharePointContentFactory
+internal static class SharePointContentFactory
 {
     public static HttpContent CreateJsonContent(object payload)
     {
@@ -206,7 +206,7 @@ public static class SharePointContentFactory
     }
 }
 
-public static class SharePointErrorFactory
+internal static class SharePointErrorFactory
 {
     public static async Task<SharePointException> CreateAsync(HttpResponseMessage response, CancellationToken ct = default)
     {

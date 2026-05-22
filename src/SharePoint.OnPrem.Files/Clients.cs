@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace SharePoint.OnPrem.Files;
 
-public sealed class SharePointFileClient(HttpClient httpClient, ISharePointRequestExecutor requestExecutor) : ISharePointFileClient
+internal sealed class SharePointFileClient(HttpClient httpClient, ISharePointRequestExecutor requestExecutor) : ISharePointFileClient
 {
     private readonly HttpClient _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ISharePointRequestExecutor _requestExecutor = requestExecutor ?? throw new ArgumentNullException(nameof(requestExecutor));
@@ -74,7 +74,7 @@ public sealed class SharePointFileClient(HttpClient httpClient, ISharePointReque
             ct);
     }
 
-    public async Task<string> GetWebUrlAsync(string serverRelativeUrl, CancellationToken ct = default)
+    public async Task<string> GetFileWebUrlAsync(string serverRelativeUrl, CancellationToken ct = default)
     {
         var validatedUrl = ServerRelativeUrl.Validate(serverRelativeUrl);
         var encodedUrl = Uri.EscapeDataString(validatedUrl);
@@ -104,6 +104,242 @@ public sealed class SharePointFileClient(HttpClient httpClient, ISharePointReque
         return new Uri(_httpClient.BaseAddress!, validatedUrl).ToString();
     }
 
+    public async Task<SharePointStoredFile> CopyAsync(
+        string sourceServerRelativeUrl,
+        string destinationFolderServerRelativeUrl,
+        string destinationFileName,
+        bool overwrite = true,
+        CancellationToken ct = default)
+    {
+        var sourceUrl = ServerRelativeUrl.Validate(sourceServerRelativeUrl);
+        var destinationUrl = BuildDestinationFileUrl(destinationFolderServerRelativeUrl, destinationFileName);
+        var encodedSource = Uri.EscapeDataString(sourceUrl);
+        var encodedDestination = Uri.EscapeDataString(destinationUrl);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedSource}')/copyto(strnewurl='{encodedDestination}',boverwrite={overwrite.ToString().ToLowerInvariant()})");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { IncludeFormDigest = true },
+            ct);
+
+        return new SharePointStoredFile(destinationUrl, Path.GetFileName(destinationUrl));
+    }
+
+    public async Task<SharePointStoredFile> MoveAsync(
+        string sourceServerRelativeUrl,
+        string destinationFolderServerRelativeUrl,
+        string destinationFileName,
+        bool overwrite = true,
+        CancellationToken ct = default)
+    {
+        var sourceUrl = ServerRelativeUrl.Validate(sourceServerRelativeUrl);
+        var destinationUrl = BuildDestinationFileUrl(destinationFolderServerRelativeUrl, destinationFileName);
+        var encodedSource = Uri.EscapeDataString(sourceUrl);
+        var encodedDestination = Uri.EscapeDataString(destinationUrl);
+        var flags = overwrite ? 1 : 0;
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedSource}')/moveto(newurl='{encodedDestination}',flags={flags})");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { IncludeFormDigest = true },
+            ct);
+
+        return new SharePointStoredFile(destinationUrl, Path.GetFileName(destinationUrl));
+    }
+
+    public Task<SharePointStoredFile> RenameAsync(
+        string serverRelativeUrl,
+        string newFileName,
+        bool overwrite = true,
+        CancellationToken ct = default)
+    {
+        var sourceUrl = ServerRelativeUrl.Validate(serverRelativeUrl);
+        var separatorIndex = sourceUrl.LastIndexOf('/');
+        if (separatorIndex <= 0)
+            throw new SharePointValidationException("File path must include a parent folder.");
+
+        var destinationFolder = sourceUrl[..separatorIndex];
+        return MoveAsync(sourceUrl, destinationFolder, newFileName, overwrite, ct);
+    }
+
+    public async Task UpdateMetadataAsync(
+        string serverRelativeUrl,
+        IReadOnlyDictionary<string, object?> fields,
+        CancellationToken ct = default)
+    {
+        var validatedUrl = ServerRelativeUrl.Validate(serverRelativeUrl);
+        ArgumentNullException.ThrowIfNull(fields);
+
+        if (fields.Count == 0)
+            throw new SharePointValidationException("At least one metadata field must be provided.");
+
+        var encodedUrl = Uri.EscapeDataString(validatedUrl);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedUrl}')/ListItemAllFields");
+
+        message.Headers.Add("IF-MATCH", "*");
+        message.Headers.Add("X-HTTP-Method", "MERGE");
+        message.Content = SharePointContentFactory.CreateJsonContent(fields);
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { IncludeFormDigest = true },
+            ct);
+    }
+
+    public async Task<IReadOnlyDictionary<string, JsonElement>> GetMetadataAsync(
+        string serverRelativeUrl,
+        IEnumerable<string>? selectFields = null,
+        CancellationToken ct = default)
+    {
+        var validatedUrl = ServerRelativeUrl.Validate(serverRelativeUrl);
+        var encodedUrl = Uri.EscapeDataString(validatedUrl);
+        var selectQuery = BuildSelectQuery(selectFields);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedUrl}')/ListItemAllFields{selectQuery}");
+
+        using var response = await _requestExecutor.SendAsync(_httpClient, message, ct: ct);
+        return await ReadMetadataMapAsync(response, ct);
+    }
+
+    public async Task<IReadOnlyDictionary<string, JsonElement>?> TryGetMetadataAsync(
+        string serverRelativeUrl,
+        IEnumerable<string>? selectFields = null,
+        CancellationToken ct = default)
+    {
+        var validatedUrl = ServerRelativeUrl.Validate(serverRelativeUrl);
+        var encodedUrl = Uri.EscapeDataString(validatedUrl);
+        var selectQuery = BuildSelectQuery(selectFields);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedUrl}')/ListItemAllFields{selectQuery}");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { EnsureSuccessStatusCode = false },
+            ct);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return null;
+
+        await _requestExecutor.EnsureSuccessAsync(response, ct);
+        return await ReadMetadataMapAsync(response, ct);
+    }
+
+    public async Task<T?> GetMetadataValueAsync<T>(
+        string serverRelativeUrl,
+        string fieldName,
+        CancellationToken ct = default)
+    {
+        ValidateMetadataFieldName(fieldName);
+
+        var metadata = await GetMetadataAsync(serverRelativeUrl, [fieldName], ct);
+        return ConvertMetadataValue<T>(metadata, fieldName);
+    }
+
+    public async Task<T?> TryGetMetadataValueAsync<T>(
+        string serverRelativeUrl,
+        string fieldName,
+        CancellationToken ct = default)
+    {
+        ValidateMetadataFieldName(fieldName);
+
+        var metadata = await TryGetMetadataAsync(serverRelativeUrl, [fieldName], ct);
+        if (metadata is null)
+            return default;
+
+        return ConvertMetadataValue<T>(metadata, fieldName);
+    }
+
+    [Obsolete("Use GetFileWebUrlAsync instead.")]
+    public Task<string> GetWebUrlAsync(string serverRelativeUrl, CancellationToken ct = default)
+        => GetFileWebUrlAsync(serverRelativeUrl, ct);
+
+    private static string BuildDestinationFileUrl(string destinationFolderServerRelativeUrl, string destinationFileName)
+    {
+        var destinationFolder = ServerRelativeUrl.Validate(destinationFolderServerRelativeUrl).TrimEnd('/');
+        var fileName = ValidateLeafFileName(destinationFileName);
+        return $"{destinationFolder}/{fileName}";
+    }
+
+    private static async Task<IReadOnlyDictionary<string, JsonElement>> ReadMetadataMapAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        var payload = await response.Content.ReadAsStringAsync(ct);
+        using var document = JsonDocument.Parse(payload);
+
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            return new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+
+        var metadata = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            metadata[property.Name] = property.Value.Clone();
+        }
+
+        return metadata;
+    }
+
+    private static void ValidateMetadataFieldName(string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(fieldName))
+            throw new SharePointValidationException("Metadata field name must be provided.");
+    }
+
+    private static T? ConvertMetadataValue<T>(IReadOnlyDictionary<string, JsonElement> metadata, string fieldName)
+    {
+        if (!metadata.TryGetValue(fieldName, out var value)
+            || value.ValueKind == JsonValueKind.Null
+            || value.ValueKind == JsonValueKind.Undefined)
+        {
+            return default;
+        }
+
+        try
+        {
+            return value.Deserialize<T>();
+        }
+        catch (JsonException ex)
+        {
+            throw new SharePointValidationException($"Metadata field '{fieldName}' could not be converted to {typeof(T).Name}: {ex.Message}");
+        }
+    }
+
+
+    private static string BuildSelectQuery(IEnumerable<string>? selectFields)
+    {
+        if (selectFields is null)
+            return string.Empty;
+
+        var fields = selectFields
+            .Where(field => !string.IsNullOrWhiteSpace(field))
+            .Select(field => field.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (fields.Length == 0)
+            return string.Empty;
+
+        if (fields.Any(field => field.Contains(',')))
+            throw new SharePointValidationException("Metadata select field names must not contain commas.");
+
+        return $"?$select={string.Join(',', fields)}";
+    }
+
     private static string ValidateLeafFileName(string fileName)
     {
         if (string.IsNullOrWhiteSpace(fileName))
@@ -117,12 +353,12 @@ public sealed class SharePointFileClient(HttpClient httpClient, ISharePointReque
     }
 }
 
-public sealed class SharePointFolderClient(HttpClient httpClient, ISharePointRequestExecutor requestExecutor) : ISharePointFolderClient
+internal sealed class SharePointFolderClient(HttpClient httpClient, ISharePointRequestExecutor requestExecutor) : ISharePointFolderClient
 {
     private readonly HttpClient _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     private readonly ISharePointRequestExecutor _requestExecutor = requestExecutor ?? throw new ArgumentNullException(nameof(requestExecutor));
 
-    public async Task EnsurePathAsync(string serverRelativeFolder, CancellationToken ct = default)
+    public async Task EnsureFolderPathAsync(string serverRelativeFolder, CancellationToken ct = default)
     {
         var validatedFolder = ServerRelativeUrl.Validate(serverRelativeFolder);
         var segments = validatedFolder.Split('/', StringSplitOptions.RemoveEmptyEntries);
@@ -137,6 +373,10 @@ public sealed class SharePointFolderClient(HttpClient httpClient, ISharePointReq
             await CreateAsync(current, ct);
         }
     }
+
+    [Obsolete("Use EnsureFolderPathAsync instead.")]
+    public Task EnsurePathAsync(string serverRelativeFolder, CancellationToken ct = default)
+        => EnsureFolderPathAsync(serverRelativeFolder, ct);
 
     public async Task<bool> ExistsAsync(string serverRelativeFolder, CancellationToken ct = default)
     {
@@ -168,13 +408,11 @@ public sealed class SharePointFolderClient(HttpClient httpClient, ISharePointReq
     {
         var validatedFolder = ServerRelativeUrl.Validate(serverRelativeFolder);
 
-        using var message = new HttpRequestMessage(HttpMethod.Post, "_api/web/folders")
+        using var message = new HttpRequestMessage(HttpMethod.Post, "_api/web/folders");
+        message.Content = SharePointContentFactory.CreateJsonContent(new
         {
-            Content = SharePointContentFactory.CreateJsonContent(new
-            {
-                ServerRelativeUrl = validatedFolder
-            })
-        };
+            ServerRelativeUrl = validatedFolder
+        });
 
         using var response = await _requestExecutor.SendAsync(
             _httpClient,

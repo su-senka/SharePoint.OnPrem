@@ -4,6 +4,11 @@
 
 The repository currently targets a first public release and is built as modular packages.
 
+## Minimum requirements
+- .NET SDK 10.0+
+- SharePoint On-Prem environment with REST API access
+- Host-configured authentication for outgoing `HttpClient` requests
+
 ## Package map
 - `SharePoint.OnPrem.Abstractions`: public contracts, DTOs, and exception types.
 - `SharePoint.OnPrem.Core`: options, URL/path helpers, digest provider, request executor, error mapping.
@@ -11,9 +16,21 @@ The repository currently targets a first public release and is built as modular 
 - `SharePoint.OnPrem.Security`: groups, users, membership sync, inheritance, role binding.
 - `SharePoint.OnPrem.DependencyInjection`: `IServiceCollection` registration helpers.
 
+## Supported scenarios
+- File and folder lifecycle operations in SharePoint (`upload`, `download`, `delete`, `ensure folder path`).
+- File relocation workflows (`copy`, `move`, `rename`) with server-relative paths.
+- File metadata update/read workflows (`UpdateMetadataAsync`, `GetMetadataAsync`, typed helpers).
+- Security operations for groups/users/membership and folder/file role assignment.
+- Permission inspection on folder/file list items.
+
+## Non-goals
+- App-specific orchestration layers and legacy adapters.
+- Broad SharePoint platform abstraction beyond REST-oriented primitives.
+- Host authentication middleware; auth stays a host application responsibility.
+
 ## Quick start (local source build)
 ```bash
-cd /Users/oleksandr/RiderProjects/PlanProvozu/SharePoint.OnPrem
+cd /Users/oleksandr/RiderProjects/SharePoint.OnPrem
 
 dotnet restore SharePoint.OnPrem.slnx
 dotnet build SharePoint.OnPrem.slnx -c Debug --no-restore
@@ -45,25 +62,14 @@ services.AddSharePointOnPrem(
     });
 ```
 
-## Example programs
-- Base sample: `samples/SharePoint.OnPrem.SampleConsole`
-- Legacy compatibility adapter sample (not part of default solution build): `samples/SharePoint.OnPrem.PlanProvozuAdapter`
-
-Run the base sample:
-```bash
-cd /Users/oleksandr/RiderProjects/PlanProvozu/SharePoint.OnPrem
-dotnet run --project samples/SharePoint.OnPrem.SampleConsole/SharePoint.OnPrem.SampleConsole.csproj
-```
-
 ## Documentation
 - `docs/architecture.md`
 - `docs/authentication.md`
 - `docs/files.md`
 - `docs/security.md`
 - `docs/troubleshooting.md`
-- `docs/migration.md`
+- `docs/contributing.md`
 - `CHANGELOG.md`
-- `SECURITY.md`
 
 ## Release status
 - Core/files/security/DI functionality is implemented and covered by tests.
@@ -72,13 +78,9 @@ dotnet run --project samples/SharePoint.OnPrem.SampleConsole/SharePoint.OnPrem.S
 
 ## CI/CD workflows
 - `.github/workflows/ci.yml`: restore, build, and test on pushes/PRs.
-- `.github/workflows/pack.yml`: create `.nupkg` and `.snupkg` artifacts (tag or manual run).
-- `.github/workflows/publish.yml`: manual/release publish to NuGet.
 
-Publish workflow requires repository secret:
-- `NUGET_API_KEY`
+Package publishing to NuGet is performed manually by maintainers.
 
 ## Notes
 - Package metadata repository links target `https://github.com/su-senka/SharePoint.OnPrem`.
-- The `PlanProvozu` compatibility adapter is for migration/validation; it is not the main public SDK surface.
 
