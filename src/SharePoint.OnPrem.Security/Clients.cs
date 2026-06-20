@@ -15,7 +15,8 @@ internal sealed class SharePointSecurityClient(
     private readonly ILoginNameNormalizer _loginNameNormalizer = loginNameNormalizer ?? throw new ArgumentNullException(nameof(loginNameNormalizer));
     private readonly ISharePointRequestExecutor _requestExecutor = requestExecutor ?? throw new ArgumentNullException(nameof(requestExecutor));
 
-    private static readonly ConcurrentDictionary<string, int> RoleDefinitionIdCache = new(StringComparer.OrdinalIgnoreCase);
+    // Instance-level cache: avoids cross-site corruption in multi-tenant processes and prevents test interference.
+    private readonly ConcurrentDictionary<string, int> _roleDefinitionIdCache = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly Dictionary<string, int> RoleNameToType = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -57,6 +58,38 @@ internal sealed class SharePointSecurityClient(
             ct);
     }
 
+    public async Task BreakFileInheritanceAsync(string serverRelativeFile, bool copyRoleAssignments, CancellationToken ct = default)
+    {
+        var validatedFile = ServerRelativeUrl.Validate(serverRelativeFile);
+        var encodedFile = Uri.EscapeDataString(validatedFile);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedFile}')/ListItemAllFields/breakroleinheritance(copyRoleAssignments={copyRoleAssignments.ToString().ToLowerInvariant()},clearSubscopes=true)");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { IncludeFormDigest = true },
+            ct);
+    }
+
+    public async Task ResetFileInheritanceAsync(string serverRelativeFile, CancellationToken ct = default)
+    {
+        var validatedFile = ServerRelativeUrl.Validate(serverRelativeFile);
+        var encodedFile = Uri.EscapeDataString(validatedFile);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedFile}')/ListItemAllFields/resetroleinheritance");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { IncludeFormDigest = true },
+            ct);
+    }
+
     public async Task<int> EnsureGroupAsync(string groupName, string? description = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(groupName))
@@ -67,7 +100,7 @@ internal sealed class SharePointSecurityClient(
             return existingId.Value;
 
         using var message = new HttpRequestMessage(HttpMethod.Post, "_api/web/sitegroups");
-        
+
         message.Content = SharePointContentFactory.CreateJsonContent(new
         {
             __metadata = new { type = "SP.Group" },
@@ -95,7 +128,7 @@ internal sealed class SharePointSecurityClient(
 
         var payload = await response.Content.ReadAsStringAsync(ct);
         using var document = JsonDocument.Parse(payload);
-        return document.RootElement.GetProperty("Id").GetInt32();
+        return ReadRequiredId(document.RootElement, $"group '{groupName}'");
     }
 
     public async Task DeleteGroupAsync(string groupName, CancellationToken ct = default)
@@ -140,7 +173,7 @@ internal sealed class SharePointSecurityClient(
 
         var payload = await response.Content.ReadAsStringAsync(ct);
         using var document = JsonDocument.Parse(payload);
-        return document.RootElement.GetProperty("Id").GetInt32();
+        return ReadRequiredId(document.RootElement, $"user '{normalizedLogin}'");
     }
 
     public async Task<IReadOnlyList<string>> GetGroupMembersAsync(string groupName, CancellationToken ct = default)
@@ -417,6 +450,7 @@ internal sealed class SharePointSecurityClient(
             new SharePointSendOptions { EnsureSuccessStatusCode = false },
             ct);
 
+        // SharePoint On-Prem may return 500 for non-existent groups in addition to 404.
         if (response.StatusCode == HttpStatusCode.NotFound || response.StatusCode == HttpStatusCode.InternalServerError)
             return null;
 
@@ -424,7 +458,7 @@ internal sealed class SharePointSecurityClient(
 
         var payload = await response.Content.ReadAsStringAsync(ct);
         using var document = JsonDocument.Parse(payload);
-        return document.RootElement.GetProperty("Id").GetInt32();
+        return ReadRequiredId(document.RootElement, $"group '{groupName}'");
     }
 
     private async Task<int?> TryGetUserPrincipalIdAsync(string loginName, CancellationToken ct)
@@ -446,7 +480,7 @@ internal sealed class SharePointSecurityClient(
 
         var payload = await response.Content.ReadAsStringAsync(ct);
         using var document = JsonDocument.Parse(payload);
-        return document.RootElement.GetProperty("Id").GetInt32();
+        return ReadRequiredId(document.RootElement, $"user '{normalizedLogin}'");
     }
 
     private async Task<int> ResolvePrincipalIdAsync(string principalName, bool createMissingGroups, CancellationToken ct)
@@ -461,10 +495,10 @@ internal sealed class SharePointSecurityClient(
             return existingUserId ?? await EnsureUserAsync(principalName, ct);
         }
 
-        return createMissingGroups
-            ? await EnsureGroupAsync(principalName, string.Empty, ct)
-            : (await TryGetGroupIdAsync(principalName, ct)
-                ?? throw new SharePointNotFoundException($"SharePoint principal '{principalName}' was not found."));
+        if (createMissingGroups)
+            return await EnsureGroupAsync(principalName, string.Empty, ct);
+
+        throw new SharePointNotFoundException($"SharePoint principal '{principalName}' was not found.");
     }
 
     private async Task<int?> ResolvePrincipalIdOrNullAsync(string principalName, CancellationToken ct)
@@ -484,7 +518,7 @@ internal sealed class SharePointSecurityClient(
         if (string.IsNullOrWhiteSpace(roleName))
             throw new SharePointValidationException("Role name must be provided.");
 
-        if (RoleDefinitionIdCache.TryGetValue(roleName, out var cached))
+        if (_roleDefinitionIdCache.TryGetValue(roleName, out var cached))
             return cached;
 
         if (!RoleNameToType.TryGetValue(roleName, out var roleType))
@@ -495,9 +529,9 @@ internal sealed class SharePointSecurityClient(
 
         var payload = await response.Content.ReadAsStringAsync(ct);
         using var document = JsonDocument.Parse(payload);
-        var roleDefinitionId = document.RootElement.GetProperty("Id").GetInt32();
+        var roleDefinitionId = ReadRequiredId(document.RootElement, $"role definition for '{roleName}'");
 
-        RoleDefinitionIdCache[roleName] = roleDefinitionId;
+        _roleDefinitionIdCache[roleName] = roleDefinitionId;
         return roleDefinitionId;
     }
 
@@ -525,6 +559,13 @@ internal sealed class SharePointSecurityClient(
         return principalName.Contains('\\')
                || principalName.Contains('@')
                || principalName.Contains('|');
+    }
+
+    private static int ReadRequiredId(JsonElement element, string context)
+    {
+        if (!element.TryGetProperty("Id", out var idElement) || !idElement.TryGetInt32(out var id))
+            throw new SharePointValidationException($"SharePoint response for {context} did not include a valid Id.");
+        return id;
     }
 
     private static SharePointPrincipalRoleAssignment MapRoleAssignment(JsonElement roleAssignment)
@@ -573,4 +614,3 @@ internal sealed class SharePointSecurityClient(
             roles);
     }
 }
-

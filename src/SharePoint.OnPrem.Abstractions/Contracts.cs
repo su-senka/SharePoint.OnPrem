@@ -25,6 +25,7 @@ public interface ISharePointFileClient
 {
     Task<SharePointStoredFile> UploadAsync(UploadFileRequest request, CancellationToken ct = default);
     Task<SharePointFileDownload> DownloadAsync(string serverRelativeUrl, CancellationToken ct = default);
+    Task<bool> ExistsAsync(string serverRelativeUrl, CancellationToken ct = default);
     Task DeleteAsync(string serverRelativeUrl, CancellationToken ct = default);
     Task<string> GetFileWebUrlAsync(string serverRelativeUrl, CancellationToken ct = default);
     Task<SharePointStoredFile> CopyAsync(
@@ -77,12 +78,15 @@ public interface ISharePointFolderClient
     Task EnsurePathAsync(string serverRelativeFolder, CancellationToken ct = default);
     Task<bool> ExistsAsync(string serverRelativeFolder, CancellationToken ct = default);
     Task CreateAsync(string serverRelativeFolder, CancellationToken ct = default);
+    Task DeleteAsync(string serverRelativeFolder, CancellationToken ct = default);
 }
 
 public interface ISharePointSecurityClient
 {
     Task BreakInheritanceAsync(string serverRelativeFolder, bool copyRoleAssignments, CancellationToken ct = default);
     Task ResetInheritanceAsync(string serverRelativeFolder, CancellationToken ct = default);
+    Task BreakFileInheritanceAsync(string serverRelativeFile, bool copyRoleAssignments, CancellationToken ct = default);
+    Task ResetFileInheritanceAsync(string serverRelativeFile, CancellationToken ct = default);
 
     Task<int> EnsureGroupAsync(string groupName, string? description = null, CancellationToken ct = default);
     Task DeleteGroupAsync(string groupName, CancellationToken ct = default);
@@ -123,8 +127,23 @@ public sealed record SharePointStoredFile(
     string ServerRelativeUrl,
     string FileName);
 
-public sealed record SharePointFileDownload(
-    byte[] Content,
-    string ContentType,
-    string FileName);
+/// <summary>
+/// Represents a downloaded file. Dispose to release the underlying network stream and HTTP response.
+/// </summary>
+public sealed class SharePointFileDownload : IDisposable, IAsyncDisposable
+{
+    public Stream Content { get; }
+    public string ContentType { get; }
+    public string FileName { get; }
+
+    public SharePointFileDownload(Stream content, string contentType, string fileName)
+    {
+        Content = content;
+        ContentType = contentType;
+        FileName = fileName;
+    }
+
+    public void Dispose() => Content.Dispose();
+    public ValueTask DisposeAsync() => Content.DisposeAsync();
+}
 

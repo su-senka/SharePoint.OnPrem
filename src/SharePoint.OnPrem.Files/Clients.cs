@@ -36,7 +36,31 @@ internal sealed class SharePointFileClient(HttpClient httpClient, ISharePointReq
             new SharePointSendOptions { IncludeFormDigest = true },
             ct);
 
-        return new SharePointStoredFile($"{folderServerRelativeUrl.TrimEnd('/')}/{fileName}", fileName);
+        // Read server-confirmed name and URL; fall back to constructed values if absent.
+        string? responseServerRelativeUrl = null;
+        string? responseFileName = null;
+        try
+        {
+            var payload = await response.Content.ReadAsStringAsync(ct);
+            if (!string.IsNullOrWhiteSpace(payload))
+            {
+                using var document = JsonDocument.Parse(payload);
+                if (document.RootElement.TryGetProperty("ServerRelativeUrl", out var sruEl))
+                    responseServerRelativeUrl = sruEl.GetString();
+                if (document.RootElement.TryGetProperty("Name", out var nameEl))
+                    responseFileName = nameEl.GetString();
+            }
+        }
+        catch (JsonException) { }
+
+        var storedUrl = !string.IsNullOrWhiteSpace(responseServerRelativeUrl)
+            ? responseServerRelativeUrl
+            : $"{folderServerRelativeUrl.TrimEnd('/')}/{fileName}";
+        var storedName = !string.IsNullOrWhiteSpace(responseFileName)
+            ? responseFileName
+            : fileName;
+
+        return new SharePointStoredFile(storedUrl, storedName);
     }
 
     public async Task<SharePointFileDownload> DownloadAsync(string serverRelativeUrl, CancellationToken ct = default)
@@ -48,11 +72,39 @@ internal sealed class SharePointFileClient(HttpClient httpClient, ISharePointReq
             HttpMethod.Get,
             $"_api/web/GetFileByServerRelativeUrl('{encodedUrl}')/$value");
 
-        using var response = await _requestExecutor.SendAsync(_httpClient, message, ct: ct);
-        var bytes = await response.Content.ReadAsByteArrayAsync(ct);
-        var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+        // Do NOT 'using' the response here — caller disposes SharePointFileDownload which
+        // disposes the HttpResponseStream wrapper, which in turn disposes the response.
+        var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { UseResponseHeadersRead = true },
+            ct);
 
-        return new SharePointFileDownload(bytes, contentType, Path.GetFileName(validatedUrl));
+        var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+        var stream = new HttpResponseStream(response, await response.Content.ReadAsStreamAsync(ct));
+        return new SharePointFileDownload(stream, contentType, Path.GetFileName(validatedUrl));
+    }
+
+    public async Task<bool> ExistsAsync(string serverRelativeUrl, CancellationToken ct = default)
+    {
+        var validatedUrl = ServerRelativeUrl.Validate(serverRelativeUrl);
+        var encodedUrl = Uri.EscapeDataString(validatedUrl);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"_api/web/GetFileByServerRelativeUrl('{encodedUrl}')?$select=ServerRelativeUrl");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions { EnsureSuccessStatusCode = false },
+            ct);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return false;
+
+        await _requestExecutor.EnsureSuccessAsync(response, ct);
+        return true;
     }
 
     public async Task DeleteAsync(string serverRelativeUrl, CancellationToken ct = default)
@@ -393,6 +445,7 @@ internal sealed class SharePointFolderClient(HttpClient httpClient, ISharePointR
             new SharePointSendOptions { EnsureSuccessStatusCode = false },
             ct);
 
+        // SharePoint On-Prem may return 500 for non-existent folders in addition to 404.
         if (response.StatusCode == HttpStatusCode.NotFound || response.StatusCode == HttpStatusCode.InternalServerError)
             return false;
 
@@ -429,5 +482,32 @@ internal sealed class SharePointFolderClient(HttpClient httpClient, ISharePointR
 
         await _requestExecutor.EnsureSuccessAsync(response, ct);
     }
-}
 
+    public async Task DeleteAsync(string serverRelativeFolder, CancellationToken ct = default)
+    {
+        var validatedFolder = ServerRelativeUrl.Validate(serverRelativeFolder);
+        var encodedFolder = Uri.EscapeDataString(validatedFolder);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"_api/web/GetFolderByServerRelativeUrl('{encodedFolder}')");
+
+        message.Headers.Add("IF-MATCH", "*");
+        message.Headers.Add("X-HTTP-Method", "DELETE");
+
+        using var response = await _requestExecutor.SendAsync(
+            _httpClient,
+            message,
+            new SharePointSendOptions
+            {
+                IncludeFormDigest = true,
+                EnsureSuccessStatusCode = false
+            },
+            ct);
+
+        if (response.StatusCode == HttpStatusCode.NotFound || response.StatusCode == HttpStatusCode.InternalServerError)
+            return;
+
+        await _requestExecutor.EnsureSuccessAsync(response, ct);
+    }
+}

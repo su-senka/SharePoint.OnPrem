@@ -10,6 +10,7 @@ public sealed class SharePointSendOptions
 {
     public bool IncludeFormDigest { get; init; }
     public bool EnsureSuccessStatusCode { get; init; } = true;
+    public bool UseResponseHeadersRead { get; init; }
 }
 
 internal interface IFormDigestProvider
@@ -172,7 +173,11 @@ internal sealed class SharePointRequestExecutor(IFormDigestProvider formDigestPr
             request.Headers.Add("X-RequestDigest", digest);
         }
 
-        var response = await httpClient.SendAsync(request, ct);
+        var completionOption = effectiveOptions.UseResponseHeadersRead
+            ? HttpCompletionOption.ResponseHeadersRead
+            : HttpCompletionOption.ResponseContentRead;
+
+        var response = await httpClient.SendAsync(request, completionOption, ct);
         if (!effectiveOptions.EnsureSuccessStatusCode)
             return response;
 
@@ -203,6 +208,53 @@ internal static class SharePointContentFactory
         var content = new StringContent(json, Encoding.UTF8);
         content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/json;odata=nometadata");
         return content;
+    }
+}
+
+/// <summary>
+/// A Stream that keeps the owning HttpResponseMessage alive until the stream itself is disposed.
+/// Used to implement true streaming downloads without eagerly buffering the response body.
+/// </summary>
+internal sealed class HttpResponseStream : Stream
+{
+    private readonly HttpResponseMessage _response;
+    private readonly Stream _inner;
+
+    internal HttpResponseStream(HttpResponseMessage response, Stream inner)
+    {
+        _response = response;
+        _inner = inner;
+    }
+
+    public override bool CanRead => _inner.CanRead;
+    public override bool CanSeek => _inner.CanSeek;
+    public override bool CanWrite => _inner.CanWrite;
+    public override long Length => _inner.Length;
+    public override long Position { get => _inner.Position; set => _inner.Position = value; }
+    public override void Flush() => _inner.Flush();
+    public override Task FlushAsync(CancellationToken ct) => _inner.FlushAsync(ct);
+    public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => _inner.ReadAsync(buffer, offset, count, ct);
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => _inner.ReadAsync(buffer, ct);
+    public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+    public override void SetLength(long value) => _inner.SetLength(value);
+    public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _inner.Dispose();
+            _response.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+        await _inner.DisposeAsync();
+        _response.Dispose();
+        await base.DisposeAsync();
     }
 }
 

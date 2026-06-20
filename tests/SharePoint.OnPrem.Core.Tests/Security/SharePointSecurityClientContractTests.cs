@@ -1,5 +1,4 @@
 using System.Net;
-using System.Reflection;
 using FluentAssertions;
 using SharePoint.OnPrem.Core.Tests.Contracts;
 using SharePoint.OnPrem.Security;
@@ -161,12 +160,7 @@ public class SharePointSecurityClientTests
     [Fact]
     public async Task BindRoleToFolderAsync_EnsuresGroupFetchesRoleIdAndBindsAssignment()
     {
-        // Role definition IDs are cached statically; clear cache so request order is deterministic.
-        var cacheField = typeof(SharePointSecurityClient).GetField("RoleDefinitionIdCache", BindingFlags.NonPublic | BindingFlags.Static);
-        cacheField.Should().NotBeNull();
-        var cache = cacheField!.GetValue(null) as System.Collections.IDictionary;
-        cache.Should().NotBeNull();
-        cache!.Clear();
+        // Each SharePointSecurityClient instance has its own role definition cache, so no cross-test cleanup needed.
 
         var handler = new QueueMessageHandler(
             _ => new HttpResponseMessage(HttpStatusCode.NotFound),
@@ -230,12 +224,7 @@ public class SharePointSecurityClientTests
     [Fact]
     public async Task BindRoleToFileAsync_ResolvesPrincipalRoleAndBindsAssignment()
     {
-        // Role definition IDs are cached across tests; clear cache to keep request sequence deterministic.
-        var cacheField = typeof(SharePointSecurityClient).GetField("RoleDefinitionIdCache", BindingFlags.NonPublic | BindingFlags.Static);
-        cacheField.Should().NotBeNull();
-        var cache = cacheField!.GetValue(null) as System.Collections.IDictionary;
-        cache.Should().NotBeNull();
-        cache!.Clear();
+        // Each SharePointSecurityClient instance has its own role definition cache, so no cross-test cleanup needed.
 
         var handler = new QueueMessageHandler(
             _ => SharePointContractTestHelpers.JsonResponse("{\"Id\":55}"),
@@ -312,6 +301,40 @@ public class SharePointSecurityClientTests
         result[0].PrincipalTitle.Should().Be("PP Owners");
         result[0].Roles.Should().ContainSingle();
         result[0].Roles[0].Name.Should().Be("Edit");
+    }
+
+    [Fact]
+    public async Task BreakFileInheritanceAsync_UsesFileListItemEndpointWithDigest()
+    {
+        var handler = new QueueMessageHandler(
+            _ => SharePointContractTestHelpers.JsonResponse("{\"FormDigestValue\":\"digest-1\",\"FormDigestTimeoutSeconds\":1800}"),
+            _ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var client = SharePointContractTestHelpers.CreateHttpClient(handler);
+        var sut = SharePointContractTestHelpers.CreateSecurityClient(client);
+
+        await sut.BreakFileInheritanceAsync("/sites/pp/Attachments/2026/report.xlsx", copyRoleAssignments: false);
+
+        handler.Requests[1].Uri.Should().Contain("GetFileByServerRelativeUrl('%2Fsites%2Fpp%2FAttachments%2F2026%2Freport.xlsx')");
+        handler.Requests[1].Uri.Should().Contain("breakroleinheritance(copyRoleAssignments=false,clearSubscopes=true)");
+        handler.Requests[1].Headers["X-RequestDigest"].Should().ContainSingle().Which.Should().Be("digest-1");
+    }
+
+    [Fact]
+    public async Task ResetFileInheritanceAsync_UsesFileResetEndpoint()
+    {
+        var handler = new QueueMessageHandler(
+            _ => SharePointContractTestHelpers.JsonResponse("{\"FormDigestValue\":\"digest-1\",\"FormDigestTimeoutSeconds\":1800}"),
+            _ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var client = SharePointContractTestHelpers.CreateHttpClient(handler);
+        var sut = SharePointContractTestHelpers.CreateSecurityClient(client);
+
+        await sut.ResetFileInheritanceAsync("/sites/pp/Attachments/2026/report.xlsx");
+
+        handler.Requests[1].Uri.Should().Contain("GetFileByServerRelativeUrl('%2Fsites%2Fpp%2FAttachments%2F2026%2Freport.xlsx')");
+        handler.Requests[1].Uri.Should().Contain("resetroleinheritance");
+        handler.Requests[1].Headers["X-RequestDigest"].Should().ContainSingle().Which.Should().Be("digest-1");
     }
 
     [Fact]

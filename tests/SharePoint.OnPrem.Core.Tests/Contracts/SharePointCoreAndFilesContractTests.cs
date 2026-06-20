@@ -109,7 +109,27 @@ public class SharePointFileClientTests
     }
 
     [Fact]
-    public async Task DownloadAsync_ReturnsBytesContentTypeAndLeafFileName()
+    public async Task UploadAsync_WhenServerReturnsStoredFileData_UsesResponseValues()
+    {
+        var handler = new QueueMessageHandler(
+            _ => SharePointContractTestHelpers.JsonResponse("{\"FormDigestValue\":\"digest-1\",\"FormDigestTimeoutSeconds\":1800}"),
+            _ => SharePointContractTestHelpers.JsonResponse("{\"ServerRelativeUrl\":\"/sites/pp/Attachments/server-name.txt\",\"Name\":\"server-name.txt\"}"));
+
+        var client = SharePointContractTestHelpers.CreateHttpClient(handler);
+        var sut = SharePointContractTestHelpers.CreateFileClient(client);
+
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("hello"));
+        var result = await sut.UploadAsync(new UploadFileRequest(
+            "/sites/pp/Attachments",
+            "client-name.txt",
+            content));
+
+        result.ServerRelativeUrl.Should().Be("/sites/pp/Attachments/server-name.txt");
+        result.FileName.Should().Be("server-name.txt");
+    }
+
+    [Fact]
+    public async Task DownloadAsync_ReturnsStreamContentTypeAndLeafFileName()
     {
         var response = new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -121,11 +141,42 @@ public class SharePointFileClientTests
         var client = SharePointContractTestHelpers.CreateHttpClient(handler);
         var sut = SharePointContractTestHelpers.CreateFileClient(client);
 
-        var result = await sut.DownloadAsync("/sites/pp/Attachments/test.txt");
+        await using var result = await sut.DownloadAsync("/sites/pp/Attachments/test.txt");
 
-        Encoding.UTF8.GetString(result.Content).Should().Be("hello");
+        using var reader = new StreamReader(result.Content);
+        var text = await reader.ReadToEndAsync();
+        text.Should().Be("hello");
         result.ContentType.Should().Be("text/plain");
         result.FileName.Should().Be("test.txt");
+    }
+
+    [Fact]
+    public async Task ExistsAsync_WhenFileExists_ReturnsTrue()
+    {
+        var handler = new QueueMessageHandler(
+            _ => SharePointContractTestHelpers.JsonResponse("{\"ServerRelativeUrl\":\"/sites/pp/Attachments/test.txt\"}"));
+
+        var client = SharePointContractTestHelpers.CreateHttpClient(handler);
+        var sut = SharePointContractTestHelpers.CreateFileClient(client);
+
+        var result = await sut.ExistsAsync("/sites/pp/Attachments/test.txt");
+
+        result.Should().BeTrue();
+        handler.Requests.Should().ContainSingle();
+        handler.Requests[0].Uri.Should().Contain("GetFileByServerRelativeUrl('%2Fsites%2Fpp%2FAttachments%2Ftest.txt')");
+    }
+
+    [Fact]
+    public async Task ExistsAsync_WhenFileIsMissing_ReturnsFalse()
+    {
+        var handler = new QueueMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        var client = SharePointContractTestHelpers.CreateHttpClient(handler);
+        var sut = SharePointContractTestHelpers.CreateFileClient(client);
+
+        var result = await sut.ExistsAsync("/sites/pp/Attachments/missing.txt");
+
+        result.Should().BeFalse();
     }
 
     [Fact]
@@ -385,6 +436,41 @@ public class SharePointFolderClientTests
 
         await act.Should().NotThrowAsync();
         handler.Requests[1].Headers["X-RequestDigest"].Should().ContainSingle().Which.Should().Be("digest-1");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_SendsDeleteSemanticsViaPostWithDigest()
+    {
+        var handler = new QueueMessageHandler(
+            _ => SharePointContractTestHelpers.JsonResponse("{\"FormDigestValue\":\"digest-1\",\"FormDigestTimeoutSeconds\":1800}"),
+            _ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var client = SharePointContractTestHelpers.CreateHttpClient(handler);
+        var sut = SharePointContractTestHelpers.CreateFolderClient(client);
+
+        await sut.DeleteAsync("/sites/pp/Attachments/2026");
+
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests[1].Method.Should().Be(HttpMethod.Post);
+        handler.Requests[1].Uri.Should().Contain("GetFolderByServerRelativeUrl('%2Fsites%2Fpp%2FAttachments%2F2026')");
+        handler.Requests[1].Headers["X-HTTP-Method"].Should().ContainSingle().Which.Should().Be("DELETE");
+        handler.Requests[1].Headers["IF-MATCH"].Should().ContainSingle().Which.Should().Be("*");
+        handler.Requests[1].Headers["X-RequestDigest"].Should().ContainSingle().Which.Should().Be("digest-1");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WhenFolderDoesNotExist_DoesNotThrow()
+    {
+        var handler = new QueueMessageHandler(
+            _ => SharePointContractTestHelpers.JsonResponse("{\"FormDigestValue\":\"digest-1\",\"FormDigestTimeoutSeconds\":1800}"),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        var client = SharePointContractTestHelpers.CreateHttpClient(handler);
+        var sut = SharePointContractTestHelpers.CreateFolderClient(client);
+
+        var act = async () => await sut.DeleteAsync("/sites/pp/Attachments/missing");
+
+        await act.Should().NotThrowAsync();
     }
 
     [Fact]

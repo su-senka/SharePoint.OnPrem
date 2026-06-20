@@ -3,7 +3,8 @@
 ## File operations
 Available through `ISharePointFileClient`:
 - `UploadAsync`
-- `DownloadAsync`
+- `DownloadAsync` — returns `SharePointFileDownload` (implements `IDisposable`/`IAsyncDisposable`); dispose when done reading the stream
+- `ExistsAsync`
 - `DeleteAsync`
 - `GetFileWebUrlAsync`
 - `CopyAsync`
@@ -19,6 +20,7 @@ Available through `ISharePointFileClient`:
 Available through `ISharePointFolderClient`:
 - `ExistsAsync`
 - `CreateAsync`
+- `DeleteAsync`
 - `EnsureFolderPathAsync`
 
 ## Example
@@ -51,6 +53,11 @@ await folders.EnsureFolderPathAsync(folder);
 await using var stream = File.OpenRead("local-report.xlsx");
 var stored = await files.UploadAsync(new UploadFileRequest(folder, "report.xlsx", stream, ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
 
+await using var download = await files.DownloadAsync(stored.ServerRelativeUrl);
+// read download.Content (Stream) before disposing
+
+var exists = await files.ExistsAsync(stored.ServerRelativeUrl);
+
 var webUrl = await files.GetFileWebUrlAsync(stored.ServerRelativeUrl);
 
 var copied = await files.CopyAsync(stored.ServerRelativeUrl, "/sites/pp/Archive", "report-copy.xlsx");
@@ -73,6 +80,7 @@ var maybeTitle = await files.TryGetMetadataValueAsync<string>("/sites/pp/Attachm
 ## Behavior notes
 - File name validation enforces leaf names (no path separators).
 - Paths must be server-relative (start with `/`) and must not be pre-encoded.
+- `DownloadAsync` returns a `SharePointFileDownload` that wraps the response stream. Dispose it (or use `await using`) to release the network connection.
 - `GetFileWebUrlAsync` attempts SharePoint linking URL first, then falls back to absolute URL composition.
 - `CopyAsync` uses SharePoint `copyto(...)`; `MoveAsync`/`RenameAsync` use `moveto(...)` with overwrite flags.
 - `UpdateMetadataAsync` sends a list-item `MERGE` against `ListItemAllFields` for the file.
@@ -80,4 +88,5 @@ var maybeTitle = await files.TryGetMetadataValueAsync<string>("/sites/pp/Attachm
 - `TryGetMetadataAsync` reads metadata like `GetMetadataAsync`, but returns `null` when the file is not found.
 - `GetMetadataValueAsync<T>` reads one field and converts it to a typed value, returning default when the field is missing/null.
 - `TryGetMetadataValueAsync<T>` combines not-found-safe lookup with typed field conversion.
+- `ISharePointFolderClient.DeleteAsync` is idempotent — deleting a non-existent folder does not throw.
 

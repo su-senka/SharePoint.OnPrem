@@ -2,7 +2,8 @@
 
 ## Capabilities
 Available through `ISharePointSecurityClient`:
-- inheritance: `BreakInheritanceAsync`, `ResetInheritanceAsync`
+- folder inheritance: `BreakInheritanceAsync`, `ResetInheritanceAsync`
+- file inheritance: `BreakFileInheritanceAsync`, `ResetFileInheritanceAsync`
 - groups: `EnsureGroupAsync`, `DeleteGroupAsync`, `GetGroupMembersAsync`
 - users: `EnsureUserAsync`
 - membership: `AddUsersToGroupAsync`, `RemoveUsersFromGroupAsync`, `SyncGroupMembershipAsync`
@@ -44,6 +45,9 @@ await security.SyncGroupMembershipAsync(group, new[]
 await security.BreakInheritanceAsync("/sites/pp/Attachments/3255/26/001", copyRoleAssignments: false);
 await security.BindRoleToFolderAsync("/sites/pp/Attachments/3255/26/001", "PP Readers", "Read");
 await security.BindRoleToFolderAsync("/sites/pp/Attachments/3255/26/001", "PP Owners", "Edit");
+
+// Break inheritance on a specific file before setting file-level permissions
+await security.BreakFileInheritanceAsync("/sites/pp/Attachments/3255/26/001/report.xlsx", copyRoleAssignments: false);
 await security.BindRoleToFileAsync("/sites/pp/Attachments/3255/26/001/report.xlsx", "PP Owners", "Edit");
 
 var assignments = await security.GetFolderRoleAssignmentsAsync("/sites/pp/Attachments/3255/26/001");
