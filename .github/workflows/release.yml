@@ -1,0 +1,40 @@
+name: Release
+
+# Push a tag such as v0.2.0 to build, test, pack with that version, and publish to nuget.org.
+# Requires the NUGET_API_KEY repository secret (an API key scoped to push SharePoint.OnPrem.*).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: nuget
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Read version from tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: dotnet build SharePoint.OnPrem.slnx -c Release -p:Version=${{ steps.version.outputs.value }}
+
+      - name: Test
+        run: dotnet test SharePoint.OnPrem.slnx -c Release --no-build
+
+      - name: Pack
+        run: dotnet pack SharePoint.OnPrem.slnx -c Release --no-build -p:Version=${{ steps.version.outputs.value }} -o artifacts
+
+      - name: Push to nuget.org
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate

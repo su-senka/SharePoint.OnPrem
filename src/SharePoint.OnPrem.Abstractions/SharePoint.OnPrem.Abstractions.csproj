@@ -1,0 +1,10 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Contracts, DTOs and exception types for SharePoint.OnPrem, a .NET client for the SharePoint Server (on-premises) REST API.</Description>
+  </PropertyGroup>
+
+</Project>

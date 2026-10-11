@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharePoint.OnPrem.Abstractions\SharePoint.OnPrem.Abstractions.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>Options, path helpers, form digest handling, request execution and error mapping for SharePoint.OnPrem.</Description>
+  </PropertyGroup>
+
+</Project>

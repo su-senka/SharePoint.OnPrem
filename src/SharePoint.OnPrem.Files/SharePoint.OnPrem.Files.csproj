@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharePoint.OnPrem.Abstractions\SharePoint.OnPrem.Abstractions.csproj" />
+    <ProjectReference Include="..\SharePoint.OnPrem.Core\SharePoint.OnPrem.Core.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>File and folder operations (upload, streaming download, copy/move/rename, metadata, listing) for SharePoint Server on-premises via REST.</Description>
+  </PropertyGroup>
+
+</Project>

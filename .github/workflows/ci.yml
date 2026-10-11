@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore SharePoint.OnPrem.slnx
+
+      - name: Build
+        run: dotnet build SharePoint.OnPrem.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test SharePoint.OnPrem.slnx -c Release --no-build --verbosity normal
+
+      - name: Pack
+        run: dotnet pack SharePoint.OnPrem.slnx -c Release --no-build -o artifacts
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: artifacts/*
